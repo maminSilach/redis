@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	// "strconv"
 )
 
 func handleCommand(args []string) string {
@@ -13,22 +14,50 @@ func handleCommand(args []string) string {
 	switch cmd {
 	case "PING":
 		if len(args) > 1 {
-			return decode(args)
+			return decodeArray(args)
 		} else {
-			return "+PONG\r\n"
+			return decodeSingle("PONG")
 		}
 	case "ECHO":
-		return decode(args)
+		return decodeArray(args)
+	case "COMMAND":
+		if args[1] == "DOCS" {
+			return decodeSingle("OK")
+		} else {
+			return decodeError(fmt.Sprintf("unknown command '%s'", args[1]))
+		}
+
 	}
 
-	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
+	return decodeError(fmt.Sprintf("unknown command '%s'", cmd))
 }
 
-func decode(args []string) string {
+func decodeArray(args []string) string {
 	msg := strings.Join(args[1:], " ")
 
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)
 }
+
+// +<string>\r\n
+func decodeSingle(line string) string {
+	return fmt.Sprintf("+%s\r\n", line)
+}
+
+// -<error>\r\n
+func decodeError(line string) string {
+	return fmt.Sprintf("-ERR %s\r\n", line)
+}
+
+// // :<number>\r\n
+// func decodeNumber(line string) string {
+
+// 	return fmt.Sprintf("-'%s'\r\n", line)
+// }
+
+// // $-1\r\n
+// func decodeNull() string {
+// 	return "$-1\r\n"
+// }
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
