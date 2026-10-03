@@ -12,7 +12,7 @@ import (
 var arity = map[string][2]int{
 	"PING":   {0, 1},
 	"ECHO":   {1, 1},
-	"SET":    {2, 2},
+	"SET":    {2, 3},
 	"GET":    {1, 1},
 	"DBSIZE": {0, 0},
 }
@@ -88,9 +88,11 @@ func handleCommand(args []string) string {
 		return encodeBulkString(args[1])
 
 	case "SET":
-		store[args[1]] = args[2]
-		return encodeSimpleString("OK")
-
+		var flag *string = nil
+		if argCount >= 3 {
+			flag = &args[3]
+		}
+		return set(flag, args[1], args[2])
 	case "GET":
 		if val, ok := store[args[1]]; ok {
 			return encodeBulkString(val)
@@ -114,6 +116,27 @@ func checkArity(cmd string, argCount int) (string, error) {
 
 func dbSize() int {
 	return len(store)
+}
+
+func set(flag *string, key string, value string) string {
+	if flag != nil {
+
+		if *flag == "NX" {
+			if _, ok := store[key]; ok {
+				return encodeNullBulkString()
+			}
+		} else if *flag == "XX" {
+			if _, ok := store[key]; !ok {
+				return encodeNullBulkString()
+			}
+		} else {
+			return encodeError(fmt.Sprintf("unknown flag '%s'", *flag))
+		}
+
+	}
+
+	store[key] = value
+	return encodeSimpleString("OK")
 }
 
 // --- RESP encoders ---
