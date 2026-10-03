@@ -100,6 +100,14 @@ func handleCommand(args []string) string {
 		return encodeNullBulkString()
 	case "DBSIZE":
 		return encodeNumber(dbSize())
+	case "INCR":
+		return increment(args[1], "1")
+	case "DECR":
+		return decrement(args[1], "1")
+	case "INCRBY":
+		return increment(args[1], args[2])
+	case "DECRBY":
+		return decrement(args[1], args[2])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -137,6 +145,54 @@ func set(flag *string, key string, value string) string {
 
 	store[key] = value
 	return encodeSimpleString("OK")
+}
+
+func increment(key string, amount string) string {
+	val, err := strconv.Atoi(amount)
+	if err != nil {
+		return encodeError("value is not an integer or out of range")
+	}
+
+	var resultValue = val
+	prev, ok := store[key]
+	if !ok {
+		store[key] = amount
+	} else {
+		prevAsInt, err := strconv.Atoi(prev)
+		if err != nil {
+			return encodeError("value is not an integer or out of range")
+		}
+
+		resultValue = prevAsInt + val
+		store[key] = strconv.Itoa(resultValue)
+		return encodeNumber(resultValue)
+	}
+
+	return encodeNumber(resultValue)
+}
+
+func decrement(key string, amount string) string {
+	val, err := strconv.Atoi(amount)
+	if err != nil {
+		return encodeError("value is not an integer or out of range")
+	}
+
+	var resultValue = val
+	prev, ok := store[key]
+	if !ok {
+		store[key] = strconv.Itoa(-resultValue)
+	} else {
+		prevAsInt, err := strconv.Atoi(prev)
+		if err != nil {
+			return encodeError("value is not an integer or out of range")
+		}
+
+		resultValue = prevAsInt - val
+		store[key] = strconv.Itoa(resultValue)
+		return encodeNumber(resultValue)
+	}
+
+	return encodeNumber(resultValue)
 }
 
 // --- RESP encoders ---
