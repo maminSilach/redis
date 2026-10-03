@@ -5,14 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
 var arity = map[string][2]int{
-	"PING": {0, 1},
-	"ECHO": {1, 1},
-	"SET":  {2, 2},
-	"GET":  {1, 1},
+	"PING":   {0, 1},
+	"ECHO":   {1, 1},
+	"SET":    {2, 2},
+	"GET":    {1, 1},
+	"DBSIZE": {0, 0},
 }
 
 var store = map[string]string{}
@@ -94,6 +96,8 @@ func handleCommand(args []string) string {
 			return encodeBulkString(val)
 		}
 		return encodeNullBulkString()
+	case "DBSIZE":
+		return encodeNumber(dbSize())
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -106,6 +110,10 @@ func checkArity(cmd string, argCount int) (string, error) {
 		return encodeError(msg), errors.New(msg)
 	}
 	return "", nil
+}
+
+func dbSize() int {
+	return len(store)
 }
 
 // --- RESP encoders ---
@@ -128,4 +136,9 @@ func encodeBulkString(s string) string {
 // $-1\r\n
 func encodeNullBulkString() string {
 	return "$-1\r\n"
+}
+
+// $:1\r\n
+func encodeNumber(num int) string {
+	return ":" + strconv.Itoa(num) + "\r\n"
 }
