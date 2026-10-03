@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
-	"io"
 	"os"
-	"strconv"
 	"strings"
 )
 
@@ -20,83 +18,49 @@ var arity = map[string][2]int{
 var store = map[string]string{}
 
 func main() {
-	r := bufio.NewReader(os.Stdin)
-	w := bufio.NewWriter(os.Stdout)
-	defer w.Flush()
-
-	for {
-		args, err := readCommand(r)
-		if err == io.EOF {
-			return
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
 		}
-		if err != nil {
-			fmt.Fprint(w, encodeError("protocol error: "+err.Error()))
-			w.Flush()
-			return
+
+		args := parseArgs(line)
+		if len(args) == 0 {
+			continue
 		}
 
 		response := handleCommand(args)
-		fmt.Fprint(w, response)
-		w.Flush()
+		fmt.Print(response)
 	}
 }
 
-func readCommand(r *bufio.Reader) ([]string, error) {
-	line, err := readLine(r)
-	if err != nil {
-		return nil, err
-	}
-	if len(line) == 0 || line[0] != '*' {
-		return nil, fmt.Errorf("expected '*', got %q", line)
-	}
+func parseArgs(line string) []string {
+	var args []string
+	var current strings.Builder
+	inQuotes := false
 
-	n, err := strconv.Atoi(line[1:])
-	if err != nil {
-		return nil, fmt.Errorf("invalid array length: %q", line)
-	}
-
-	args := make([]string, 0, n)
-	for i := 0; i < n; i++ {
-		s, err := readBulkString(r)
-		if err != nil {
-			return nil, err
+	for _, ch := range line {
+		switch {
+		case ch == '"' && !inQuotes:
+			inQuotes = true
+		case ch == '"' && inQuotes:
+			inQuotes = false
+		case ch == ' ' && !inQuotes:
+			if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(ch)
 		}
-		args = append(args, s)
-	}
-	return args, nil
-}
-
-func readBulkString(r *bufio.Reader) (string, error) {
-	line, err := readLine(r)
-	if err != nil {
-		return "", err
-	}
-	if len(line) == 0 || line[0] != '$' {
-		return "", fmt.Errorf("expected '$', got %q", line)
 	}
 
-	n, err := strconv.Atoi(line[1:])
-	if err != nil {
-		return "", fmt.Errorf("invalid bulk length: %q", line)
+	if current.Len() > 0 {
+		args = append(args, current.String())
 	}
 
-	buf := make([]byte, n)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return "", err
-	}
-
-	if _, err := readLine(r); err != nil {
-		return "", err
-	}
-	return string(buf), nil
-}
-
-func readLine(r *bufio.Reader) (string, error) {
-	line, err := r.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimRight(line, "\r\n"), nil
+	return args
 }
 
 func handleCommand(args []string) string {
@@ -126,11 +90,10 @@ func handleCommand(args []string) string {
 		return encodeSimpleString("OK")
 
 	case "GET":
-		val, ok := store[args[1]]
-		if !ok {
-			return encodeNullBulkString()
+		if val, ok := store[args[1]]; ok {
+			return encodeBulkString(val)
 		}
-		return encodeBulkString(val)
+		return encodeNullBulkString()
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -147,18 +110,22 @@ func checkArity(cmd string, argCount int) (string, error) {
 
 // --- RESP encoders ---
 
+// +OK\r\n
 func encodeSimpleString(s string) string {
 	return "+" + s + "\r\n"
 }
 
+// -ERR message\r\n
 func encodeError(msg string) string {
 	return "-ERR " + msg + "\r\n"
 }
 
+// $len\r\n<bytes>\r\n
 func encodeBulkString(s string) string {
 	return fmt.Sprintf("$%d\r\n%s\r\n", len(s), s)
 }
 
+// $-1\r\n
 func encodeNullBulkString() string {
 	return "$-1\r\n"
 }
