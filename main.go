@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
 	// "strconv"
+	"errors"
 )
+
+var ARITY = map[string][]int{
+	"PING": {0, 1},
+	"ECHO": {1, 1},
+}
 
 func handleCommand(args []string) string {
 	cmd := strings.ToUpper(args[0])
+
+	if message, err := checkArity(cmd, len(args)-1); err != nil {
+		return message
+	}
 
 	switch cmd {
 	case "PING":
@@ -30,6 +41,16 @@ func handleCommand(args []string) string {
 	}
 
 	return decodeError(fmt.Sprintf("unknown command '%s'", cmd))
+}
+
+func checkArity(cmd string, args int) (string, error) {
+	count, ok := ARITY[cmd]
+	if ok && (args < count[0] || args > count[1]) {
+		errorMessage := decodeError(fmt.Sprintf("wrong number of arguments for '%s' command", cmd))
+		return errorMessage, errors.New(errorMessage)
+	}
+
+	return "", nil
 }
 
 func decodeArray(args []string) string {
