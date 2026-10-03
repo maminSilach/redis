@@ -7,23 +7,27 @@ import (
 	"strings"
 )
 
-// $<len>\r\n<message>\r\n
-func handleCommand(args []string, message string) string {
+func handleCommand(args []string) string {
 	cmd := strings.ToUpper(args[0])
 
 	switch cmd {
 	case "PING":
 		if len(args) > 1 {
-			msg := strings.Join(args[1:], " ")
-			return fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)
+			return decode(args)
 		} else {
 			return "+PONG\r\n"
 		}
-		// TODO: Return "+PONG\r\n" for no args
-		// TODO: Return bulk string for PING <message>
+	case "ECHO":
+		return decode(args)
 	}
 
 	return fmt.Sprintf("-ERR unknown command '%s'\r\n", cmd)
+}
+
+func decode(args []string) string {
+	msg := strings.Join(args[1:], " ")
+
+	return fmt.Sprintf("$%d\r\n%s\r\n", len(msg), msg)
 }
 
 func main() {
@@ -37,7 +41,7 @@ func main() {
 		}
 
 		args := parseArgs(line)
-		response := handleCommand(args, line)
+		response := handleCommand(args)
 		fmt.Print(response)
 	}
 }
