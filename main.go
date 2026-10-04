@@ -168,20 +168,18 @@ func set(args []string) string {
 		} else if val == "XX" {
 			xx = true
 		} else if val == "EX" {
-			val, err := strconv.Atoi(args[idx+1])
+			n, err := strconv.Atoi(args[idx+1])
 			if err != nil {
 				return encodeError("value is not an integer or out of range")
 			}
-
-			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(val)*1000
+			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(n)*1000
 			ttl = &exp
 		} else if val == "PX" {
-			val, err := strconv.Atoi(args[idx+1])
+			n, err := strconv.Atoi(args[idx+1])
 			if err != nil {
 				return encodeError("value is not an integer or out of range")
 			}
-
-			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(val)
+			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(n)
 			ttl = &exp
 		}
 	}
@@ -257,19 +255,23 @@ func expire(key string, second string) string {
 	}
 
 	cur, ok := store[key]
-	if !ok {
+	if !ok || cur == nil {
+		return encodeNumber(0)
+	}
+
+	if cur.TTL != nil && *cur.TTL <= time.Now().UnixNano()/int64(time.Millisecond) {
+		delete(store, key)
 		return encodeNumber(0)
 	}
 
 	actualTTL := time.Now().UnixNano()/int64(time.Millisecond) + int64(secondAsInt)*1000
 	cur.TTL = &actualTTL
-
 	return encodeNumber(1)
 }
 
 func ttl(key string, unit time.Duration) string {
 	cur, ok := store[key]
-	if !ok {
+	if !ok || cur == nil {
 		return encodeNumber(-2)
 	}
 
@@ -283,10 +285,9 @@ func ttl(key string, unit time.Duration) string {
 	}
 
 	if unit == time.Second {
-		return encodeNumber(int(diff / 1000))
-	} else {
-		return encodeNumber(int(diff))
+		return encodeNumber(int((diff + 999) / 1000))
 	}
+	return encodeNumber(int(diff))
 }
 
 func persist(key string) string {
