@@ -22,10 +22,17 @@ func newStoreValue(value string) *StoreValue {
 	}
 }
 
+func newStoreValueWithTTL(value string, TTL *int64) *StoreValue {
+	return &StoreValue{
+		value: value,
+		TTL:   TTL,
+	}
+}
+
 var arity = map[string][2]int{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
-	"SET":     {2, 3},
+	"SET":     {2, 5},
 	"GET":     {1, 1},
 	"DBSIZE":  {0, 0},
 	"INCR":    {1, 1},
@@ -35,6 +42,7 @@ var arity = map[string][2]int{
 	"EXPIRE":  {2, 2},
 	"TTL":     {1, 1},
 	"PERSIST": {1, 1},
+	"PTTL":    {1, 1},
 }
 
 var store = map[string]*StoreValue{}
@@ -108,11 +116,7 @@ func handleCommand(args []string) string {
 		return encodeBulkString(args[1])
 
 	case "SET":
-		var flag *string = nil
-		if argCount >= 3 {
-			flag = &args[3]
-		}
-		return set(flag, args[1], args[2])
+		return set(args)
 	case "GET":
 		if storeValue, ok := store[args[1]]; ok {
 			return encodeBulkString(storeValue.value)
@@ -131,7 +135,9 @@ func handleCommand(args []string) string {
 	case "EXPIRE":
 		return expire(args[1], args[2])
 	case "TTL":
-		return ttl(args[1])
+		return ttl(args[1], time.Second)
+	case "PTTL":
+		return ttl(args[1], time.Millisecond)
 	case "PERSIST":
 		return persist(args[1])
 	}
@@ -152,24 +158,47 @@ func dbSize() int {
 	return len(store)
 }
 
-func set(flag *string, key string, value string) string {
-	if flag != nil {
+func set(args []string) string {
+	var nx, xx bool
+	var ttl *int64 = nil
 
-		if *flag == "NX" {
-			if _, ok := store[key]; ok {
-				return encodeNullBulkString()
+	for idx, val := range args {
+		if val == "NX" {
+			nx = true
+		} else if val == "XX" {
+			xx = true
+		} else if val == "EX" {
+			val, err := strconv.Atoi(args[idx+1])
+			if err != nil {
+				return encodeError("value is not an integer or out of range")
 			}
-		} else if *flag == "XX" {
-			if _, ok := store[key]; !ok {
-				return encodeNullBulkString()
+
+			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(val)*1000
+			ttl = &exp
+		} else if val == "PX" {
+			val, err := strconv.Atoi(args[idx+1])
+			if err != nil {
+				return encodeError("value is not an integer or out of range")
 			}
-		} else {
-			return encodeError(fmt.Sprintf("unknown flag '%s'", *flag))
+
+			exp := time.Now().UnixNano()/int64(time.Millisecond) + int64(val)
+			ttl = &exp
 		}
-
 	}
 
-	store[key] = newStoreValue(value)
+	key := args[1]
+	value := args[2]
+	if nx {
+		if _, ok := store[key]; ok {
+			return encodeNullBulkString()
+		}
+	} else if xx {
+		if _, ok := store[key]; !ok {
+			return encodeNullBulkString()
+		}
+	}
+
+	store[key] = newStoreValueWithTTL(value, ttl)
 	return encodeSimpleString("OK")
 }
 
@@ -238,7 +267,7 @@ func expire(key string, second string) string {
 	return encodeNumber(1)
 }
 
-func ttl(key string) string {
+func ttl(key string, unit time.Duration) string {
 	cur, ok := store[key]
 	if !ok {
 		return encodeNumber(-2)
@@ -253,7 +282,11 @@ func ttl(key string) string {
 		return encodeNumber(-2)
 	}
 
-	return encodeNumber(int(diff / 1000))
+	if unit == time.Second {
+		return encodeNumber(int(diff / 1000))
+	} else {
+		return encodeNumber(int(diff))
+	}
 }
 
 func persist(key string) string {
