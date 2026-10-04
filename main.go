@@ -5,7 +5,6 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -63,8 +62,8 @@ var arity = map[string][2]int{
 	"PERSIST": {1, 1},
 	"WAIT":    {1, 1},
 	"EXISTS":  {1, 1},
-	"LPUSH":   {2, math.MaxInt},
-	"RPUSH":   {2, math.MaxInt},
+	"LPUSH":   {2, 9223372036854775807},
+	"RPUSH":   {2, 9223372036854775807},
 	"LRANGE":  {2, 3},
 }
 
