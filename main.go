@@ -232,7 +232,7 @@ func expire(key string, second string) string {
 		return encodeNumber(0)
 	}
 
-	actualTTL := time.Now().UnixMilli() + int64(secondAsInt)*1000
+	actualTTL := time.Now().UnixNano()/int64(time.Millisecond) + int64(secondAsInt)*1000
 	cur.TTL = &actualTTL
 
 	return encodeNumber(1)
@@ -248,7 +248,7 @@ func ttl(key string) string {
 		return encodeNumber(-1)
 	}
 
-	diff := *cur.TTL - time.Now().UnixMilli()
+	diff := *cur.TTL - time.Now().UnixNano()/int64(time.Millisecond)
 	if diff < 0 {
 		return encodeNumber(-2)
 	}
@@ -258,7 +258,7 @@ func ttl(key string) string {
 
 func persist(key string) string {
 	cur, ok := store[key]
-	if !ok || cur.TTL == nil || *cur.TTL-time.Now().UnixMilli() < 0 {
+	if !ok || cur.TTL == nil || *cur.TTL-time.Now().UnixNano()/int64(time.Millisecond) < 0 {
 		return encodeNumber(0)
 	}
 
