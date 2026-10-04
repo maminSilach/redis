@@ -2,16 +2,27 @@ package main
 
 import (
 	"bufio"
+	"container/list"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 )
 
+type ValueKind int
+
+const (
+	KindString ValueKind = iota
+	KindList
+	KindHash
+)
+
 type StoreValue struct {
 	value string
+	list  *list.List
 	TTL   *int64
 }
 
@@ -19,6 +30,13 @@ func newStoreValue(value string) *StoreValue {
 	return &StoreValue{
 		value: value,
 		TTL:   nil,
+	}
+}
+
+func newStoreValueWithList(list *list.List) *StoreValue {
+	return &StoreValue{
+		list: list,
+		TTL:  nil,
 	}
 }
 
@@ -45,6 +63,9 @@ var arity = map[string][2]int{
 	"PERSIST": {1, 1},
 	"WAIT":    {1, 1},
 	"EXISTS":  {1, 1},
+	"LPUSH":   {2, math.MaxInt},
+	"RPUSH":   {2, math.MaxInt},
+	"LRANGE":  {2, 3},
 }
 
 var store = map[string]*StoreValue{}
@@ -194,6 +215,13 @@ func handleCommand(args []string) string {
 		}
 
 		return encodeNumber(1)
+
+	case "RPUSH":
+		return push(args, true)
+	case "LPUSH":
+		return push(args, false)
+	case "LRANGE":
+		return lrange(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -381,6 +409,47 @@ func expireTTL(val *StoreValue) bool {
 	return val.TTL != nil && *val.TTL-nowMs() < 0
 }
 
+func push(args []string, rpush bool) string {
+	key := args[1]
+	cur, ok := store[key]
+	var listr *list.List
+
+	if !ok || cur == nil {
+		listr = list.New()
+		val := newStoreValueWithList(listr)
+		store[key] = val
+	} else {
+		if cur.list == nil && cur.value != "" {
+			return encodeWrong("Operation against a key holding the wrong kind of value")
+		}
+
+		listr = cur.list
+	}
+
+	for i := 2; i < len(args); i++ {
+		if rpush {
+			listr.PushBack(args[i])
+		} else {
+			listr.PushFront(args[i])
+		}
+	}
+
+	return encodeNumber(listr.Len())
+}
+
+func lrange(key string) string {
+	cur, ok := store[key]
+	if !ok || cur == nil {
+		return encodeError("not found")
+	}
+
+	if cur.list == nil {
+		return encodeWrong("Operation against a key holding the wrong kind of value")
+	}
+
+	return encodeArray(cur.list)
+}
+
 // --- RESP encoders ---
 
 func encodeSimpleString(s string) string {
@@ -389,6 +458,10 @@ func encodeSimpleString(s string) string {
 
 func encodeError(msg string) string {
 	return "-ERR " + msg + "\r\n"
+}
+
+func encodeWrong(msg string) string {
+	return "-WRONGTYPE " + msg + "\r\n"
 }
 
 func encodeBulkString(s string) string {
@@ -401,4 +474,21 @@ func encodeNullBulkString() string {
 
 func encodeNumber(num int) string {
 	return ":" + strconv.Itoa(num) + "\r\n"
+}
+
+func encodeArray(items *list.List) string {
+	var sb strings.Builder
+	sb.WriteString("*")
+	sb.WriteString(strconv.Itoa(items.Len()))
+	sb.WriteString("\r\n")
+
+	for e := items.Front(); e != nil; e = e.Next() {
+		sb.WriteString("$")
+		sb.WriteString(strconv.Itoa(len(e.Value.(string))))
+		sb.WriteString("\r\n")
+		sb.WriteString(e.Value.(string))
+		sb.WriteString("\r\n")
+	}
+
+	return sb.String()
 }
