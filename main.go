@@ -65,6 +65,9 @@ var arity = map[string][2]int{
 	"LPUSH":   {2, 9223372036854775807},
 	"RPUSH":   {2, 9223372036854775807},
 	"LRANGE":  {2, 3},
+	"LPOP":    {1, 1},
+	"RPOP":    {1, 1},
+	"LLEN":    {1, 1},
 }
 
 var store = map[string]*StoreValue{}
@@ -148,15 +151,12 @@ func handleCommand(args []string) string {
 		return set(args)
 
 	case "GET":
-		storeValue, ok := store[args[1]]
+		res, ok := get(args[1])
 		if !ok {
 			return encodeNullBulkString()
+		} else {
+			return encodeBulkString(res.value)
 		}
-		if expireTTL(storeValue) {
-			delete(store, args[1])
-			return encodeNullBulkString()
-		}
-		return encodeBulkString(storeValue.value)
 
 	case "DBSIZE":
 		size := 0
@@ -221,6 +221,12 @@ func handleCommand(args []string) string {
 		return push(args, false)
 	case "LRANGE":
 		return lrange(args[1])
+	case "LPOP":
+		return pop(args[1], false)
+	case "RPOP":
+		return pop(args[1], true)
+	case "LLEN":
+		return llen(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -285,6 +291,19 @@ func set(args []string) string {
 
 	store[key] = newStoreValueWithTTL(value, ttl)
 	return encodeSimpleString("OK")
+}
+
+func get(key string) (*StoreValue, bool) {
+	storeValue, ok := store[key]
+	if !ok {
+		return nil, false
+	}
+	if expireTTL(storeValue) {
+		delete(store, key)
+		return nil, false
+	}
+
+	return storeValue, true
 }
 
 func increment(key string, amount string) string {
@@ -447,6 +466,37 @@ func lrange(key string) string {
 	}
 
 	return encodeArray(cur.list)
+}
+
+func pop(key string, rpop bool) string {
+	cur, ok := get(key)
+	if !ok || cur == nil || cur.list == nil {
+		return encodeNullBulkString()
+	}
+
+	var digit *list.Element
+	if rpop {
+		digit = cur.list.Back()
+		cur.list.Remove(digit)
+	} else {
+		digit = cur.list.Front()
+		cur.list.Remove(digit)
+	}
+
+	if cur.list.Len() == 0 {
+		delete(store, key)
+	}
+
+	return encodeBulkString(digit.Value.(string))
+}
+
+func llen(key string) string {
+	cur, ok := get(key)
+	if !ok || cur == nil || cur.list == nil {
+		return encodeNullBulkString()
+	}
+
+	return encodeNumber(cur.list.Len())
 }
 
 // --- RESP encoders ---
