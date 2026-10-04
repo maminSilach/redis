@@ -7,17 +7,37 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
-var arity = map[string][2]int{
-	"PING":   {0, 1},
-	"ECHO":   {1, 1},
-	"SET":    {2, 3},
-	"GET":    {1, 1},
-	"DBSIZE": {0, 0},
+type StoreValue struct {
+	value string
+	TTL   *int64
 }
 
-var store = map[string]string{}
+func newStoreValue(value string) *StoreValue {
+	return &StoreValue{
+		value: value,
+		TTL:   nil,
+	}
+}
+
+var arity = map[string][2]int{
+	"PING":    {0, 1},
+	"ECHO":    {1, 1},
+	"SET":     {2, 3},
+	"GET":     {1, 1},
+	"DBSIZE":  {0, 0},
+	"INCR":    {1, 1},
+	"DECR":    {1, 1},
+	"INCRBY":  {2, 2},
+	"DECRBY":  {2, 2},
+	"EXPIRE":  {2, 2},
+	"TTL":     {1, 1},
+	"PERSIST": {1, 1},
+}
+
+var store = map[string]*StoreValue{}
 
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
@@ -94,8 +114,8 @@ func handleCommand(args []string) string {
 		}
 		return set(flag, args[1], args[2])
 	case "GET":
-		if val, ok := store[args[1]]; ok {
-			return encodeBulkString(val)
+		if storeValue, ok := store[args[1]]; ok {
+			return encodeBulkString(storeValue.value)
 		}
 		return encodeNullBulkString()
 	case "DBSIZE":
@@ -108,6 +128,12 @@ func handleCommand(args []string) string {
 		return increment(args[1], args[2])
 	case "DECRBY":
 		return decrement(args[1], args[2])
+	case "EXPIRE":
+		return expire(args[1], args[2])
+	case "TTL":
+		return ttl(args[1])
+	case "PERSIST":
+		return persist(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -143,7 +169,7 @@ func set(flag *string, key string, value string) string {
 
 	}
 
-	store[key] = value
+	store[key] = newStoreValue(value)
 	return encodeSimpleString("OK")
 }
 
@@ -156,15 +182,15 @@ func increment(key string, amount string) string {
 	var resultValue = val
 	prev, ok := store[key]
 	if !ok {
-		store[key] = amount
+		store[key] = newStoreValue(amount)
 	} else {
-		prevAsInt, err := strconv.Atoi(prev)
+		prevAsInt, err := strconv.Atoi(prev.value)
 		if err != nil {
 			return encodeError("value is not an integer or out of range")
 		}
 
 		resultValue = prevAsInt + val
-		store[key] = strconv.Itoa(resultValue)
+		store[key] = newStoreValue(strconv.Itoa(resultValue))
 		return encodeNumber(resultValue)
 	}
 
@@ -180,19 +206,64 @@ func decrement(key string, amount string) string {
 	var resultValue = val
 	prev, ok := store[key]
 	if !ok {
-		store[key] = strconv.Itoa(-resultValue)
+		store[key] = newStoreValue(strconv.Itoa(-resultValue))
 	} else {
-		prevAsInt, err := strconv.Atoi(prev)
+		prevAsInt, err := strconv.Atoi(prev.value)
 		if err != nil {
 			return encodeError("value is not an integer or out of range")
 		}
 
 		resultValue = prevAsInt - val
-		store[key] = strconv.Itoa(resultValue)
+		store[key] = newStoreValue(strconv.Itoa(resultValue))
 		return encodeNumber(resultValue)
 	}
 
 	return encodeNumber(resultValue)
+}
+
+func expire(key string, second string) string {
+	secondAsInt, err := strconv.Atoi(second)
+	if err != nil {
+		return encodeError("value is not an integer or out of range")
+	}
+
+	cur, ok := store[key]
+	if !ok {
+		return encodeNumber(0)
+	}
+
+	actualTTL := time.Now().UnixMilli() + int64(secondAsInt)*1000
+	cur.TTL = &actualTTL
+
+	return encodeNumber(1)
+}
+
+func ttl(key string) string {
+	cur, ok := store[key]
+	if !ok {
+		return encodeNumber(-2)
+	}
+
+	if cur.TTL == nil {
+		return encodeNumber(-1)
+	}
+
+	diff := *cur.TTL - time.Now().UnixMilli()
+	if diff < 0 {
+		return encodeNumber(-2)
+	}
+
+	return encodeNumber(int(diff / 1000))
+}
+
+func persist(key string) string {
+	cur, ok := store[key]
+	if !ok || cur.TTL == nil || *cur.TTL-time.Now().UnixMilli() < 0 {
+		return encodeNumber(0)
+	}
+
+	cur.TTL = nil
+	return encodeNumber(1)
 }
 
 // --- RESP encoders ---
