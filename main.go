@@ -25,6 +25,14 @@ type StoreValue struct {
 	TTL   *int64
 }
 
+func mustAtoi(s string) int {
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
 func newStoreValue(value string) *StoreValue {
 	return &StoreValue{
 		value: value,
@@ -220,7 +228,7 @@ func handleCommand(args []string) string {
 	case "LPUSH":
 		return push(args, false)
 	case "LRANGE":
-		return lrange(args[1])
+		return lrange(args[1], mustAtoi(args[2]), mustAtoi(args[3]))
 	case "LPOP":
 		return pop(args[1], false)
 	case "RPOP":
@@ -455,17 +463,17 @@ func push(args []string, rpush bool) string {
 	return encodeNumber(listr.Len())
 }
 
-func lrange(key string) string {
+func lrange(key string, start int, end int) string {
 	cur, ok := store[key]
 	if !ok || cur == nil {
-		return encodeError("not found")
+		return encodeEmpty()
 	}
 
 	if cur.list == nil {
 		return encodeWrong("Operation against a key holding the wrong kind of value")
 	}
 
-	return encodeArray(cur.list)
+	return encodeArray(cur.list, start, end)
 }
 
 func pop(key string, rpop bool) string {
@@ -525,19 +533,60 @@ func encodeNumber(num int) string {
 	return ":" + strconv.Itoa(num) + "\r\n"
 }
 
-func encodeArray(items *list.List) string {
+func encodeEmpty() string {
+	return "*0\r\n"
+}
+
+func encodeArray(items *list.List, start int, end int) string {
+	actualStart, actualEnd, ok := normalize(start, end, items.Len())
+	if !ok {
+		return encodeEmpty()
+	}
+
+	var selected []string
+	counter := 0
+	for e := items.Front(); e != nil && counter <= actualEnd; e = e.Next() {
+		if counter >= actualStart {
+			selected = append(selected, e.Value.(string))
+		}
+		counter++
+	}
+
 	var sb strings.Builder
 	sb.WriteString("*")
-	sb.WriteString(strconv.Itoa(items.Len()))
+	sb.WriteString(strconv.Itoa(len(selected)))
 	sb.WriteString("\r\n")
 
-	for e := items.Front(); e != nil; e = e.Next() {
+	for _, e := range selected {
 		sb.WriteString("$")
-		sb.WriteString(strconv.Itoa(len(e.Value.(string))))
+		sb.WriteString(strconv.Itoa(len(e)))
 		sb.WriteString("\r\n")
-		sb.WriteString(e.Value.(string))
+		sb.WriteString(e)
 		sb.WriteString("\r\n")
 	}
 
 	return sb.String()
+}
+
+func normalize(start, end, length int) (int, int, bool) {
+	if start < 0 {
+		start = length + start
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	if end < 0 {
+		end = length + end
+	}
+
+	if end >= length {
+		end = length - 1
+	}
+
+	if start > end || start >= length {
+		return 0, 0, false
+	}
+
+	return start, end, true
 }
