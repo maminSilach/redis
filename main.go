@@ -23,6 +23,7 @@ type StoreValue struct {
 	value string
 	list  *list.List
 	TTL   *int64
+	maps  map[string]*string
 }
 
 func mustAtoi(s string) int {
@@ -54,6 +55,14 @@ func newStoreValueWithTTL(value string, TTL *int64) *StoreValue {
 	}
 }
 
+func newStoreValueWithMap(maps map[string]*string) *StoreValue {
+	return &StoreValue{
+		list: nil,
+		TTL:  nil,
+		maps: maps,
+	}
+}
+
 var arity = map[string][2]int{
 	"PING":    {0, 1},
 	"ECHO":    {1, 1},
@@ -72,10 +81,13 @@ var arity = map[string][2]int{
 	"EXISTS":  {1, 1},
 	"LPUSH":   {2, 9223372036854775807},
 	"RPUSH":   {2, 9223372036854775807},
-	"LRANGE":  {2, 3},
+	"LRANGE":  {3, 3},
 	"LPOP":    {1, 1},
 	"RPOP":    {1, 1},
 	"LLEN":    {1, 1},
+	"HSET":    {3, 9223372036854775807},
+	"HGET":    {2, 2},
+	"HGETALL": {1, 1},
 }
 
 var store = map[string]*StoreValue{}
@@ -162,9 +174,8 @@ func handleCommand(args []string) string {
 		res, ok := get(args[1])
 		if !ok {
 			return encodeNullBulkString()
-		} else {
-			return encodeBulkString(res.value)
 		}
+		return encodeBulkString(res.value)
 
 	case "DBSIZE":
 		size := 0
@@ -215,12 +226,10 @@ func handleCommand(args []string) string {
 		if !ok {
 			return encodeNumber(0)
 		}
-
 		if expireTTL(storeValue) {
-			delete(store, args[1])
+			delete(store, key)
 			return encodeNumber(0)
 		}
-
 		return encodeNumber(1)
 
 	case "RPUSH":
@@ -228,13 +237,27 @@ func handleCommand(args []string) string {
 	case "LPUSH":
 		return push(args, false)
 	case "LRANGE":
-		return lrange(args[1], mustAtoi(args[2]), mustAtoi(args[3]))
+		start, err := strconv.Atoi(args[2])
+		if err != nil {
+			return encodeError("value is not an integer or out of range")
+		}
+		end, err := strconv.Atoi(args[3])
+		if err != nil {
+			return encodeError("value is not an integer or out of range")
+		}
+		return lrange(args[1], start, end)
 	case "LPOP":
 		return pop(args[1], false)
 	case "RPOP":
 		return pop(args[1], true)
 	case "LLEN":
 		return llen(args[1])
+	case "HSET":
+		return hset(args)
+	case "HGET":
+		return hget(args[1], args[2])
+	case "HGETALL":
+		return hgetall(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -445,10 +468,9 @@ func push(args []string, rpush bool) string {
 		val := newStoreValueWithList(listr)
 		store[key] = val
 	} else {
-		if cur.list == nil && cur.value != "" {
+		if cur.list == nil {
 			return encodeWrong("Operation against a key holding the wrong kind of value")
 		}
-
 		listr = cur.list
 	}
 
@@ -464,7 +486,7 @@ func push(args []string, rpush bool) string {
 }
 
 func lrange(key string, start int, end int) string {
-	cur, ok := store[key]
+	cur, ok := get(key)
 	if !ok || cur == nil {
 		return encodeEmpty()
 	}
@@ -473,7 +495,7 @@ func lrange(key string, start int, end int) string {
 		return encodeWrong("Operation against a key holding the wrong kind of value")
 	}
 
-	return encodeArray(cur.list, start, end)
+	return encodeList(cur.list, start, end)
 }
 
 func pop(key string, rpop bool) string {
@@ -485,26 +507,99 @@ func pop(key string, rpop bool) string {
 	var digit *list.Element
 	if rpop {
 		digit = cur.list.Back()
-		cur.list.Remove(digit)
 	} else {
 		digit = cur.list.Front()
-		cur.list.Remove(digit)
 	}
+
+	if digit == nil {
+		return encodeNullBulkString()
+	}
+
+	value := digit.Value.(string)
+	cur.list.Remove(digit)
 
 	if cur.list.Len() == 0 {
 		delete(store, key)
 	}
 
-	return encodeBulkString(digit.Value.(string))
+	return encodeBulkString(value)
 }
 
 func llen(key string) string {
 	cur, ok := get(key)
-	if !ok || cur == nil || cur.list == nil {
-		return encodeNullBulkString()
+	if !ok || cur == nil {
+		return encodeNumber(0)
+	}
+	if cur.list == nil {
+		return encodeWrong("Operation against a key holding the wrong kind of value")
+	}
+	return encodeNumber(cur.list.Len())
+}
+
+func hset(args []string) string {
+	if len(args) < 3 || len(args)%2 != 0 {
+		return encodeError("wrong number of arguments for 'HSET' command")
 	}
 
-	return encodeNumber(cur.list.Len())
+	key := args[1]
+	cur, ok := store[key]
+	var maps map[string]*string
+
+	if !ok || cur == nil {
+		maps = map[string]*string{}
+		store[key] = newStoreValueWithMap(maps)
+	} else {
+		if cur.maps == nil {
+			return encodeWrong("Operation against a key holding the wrong kind of value")
+		}
+		maps = cur.maps
+	}
+
+	added := 0
+	for i := 2; i+1 < len(args); i += 2 {
+		field := args[i]
+		value := args[i+1]
+
+		if _, exists := maps[field]; !exists {
+			added++
+		}
+		v := value
+		maps[field] = &v
+	}
+
+	return encodeNumber(added)
+}
+
+func hget(key, field string) string {
+	cur, ok := get(key)
+	if !ok || cur == nil {
+		return encodeNullBulkString()
+	}
+	if cur.maps == nil {
+		return encodeWrong("Operation against a key holding the wrong kind of value")
+	}
+
+	val := cur.maps[field]
+	if val == nil {
+		return encodeNullBulkString()
+	}
+	return encodeBulkString(*val)
+}
+
+func hgetall(key string) string {
+	cur, ok := get(key)
+	if !ok || cur == nil {
+		return encodeEmpty()
+	}
+	if cur.maps == nil {
+		return encodeWrong("Operation against a key holding the wrong kind of value")
+	}
+
+	items := make([]string, 0, len(cur.maps)*2)
+	for f, v := range cur.maps {
+		items = append(items, f, *v)
+	}
+	return encodeArray(items)
 }
 
 // --- RESP encoders ---
@@ -537,7 +632,7 @@ func encodeEmpty() string {
 	return "*0\r\n"
 }
 
-func encodeArray(items *list.List, start int, end int) string {
+func encodeList(items *list.List, start int, end int) string {
 	actualStart, actualEnd, ok := normalize(start, end, items.Len())
 	if !ok {
 		return encodeEmpty()
@@ -552,12 +647,16 @@ func encodeArray(items *list.List, start int, end int) string {
 		counter++
 	}
 
+	return encodeArray(selected)
+}
+
+func encodeArray(items []string) string {
 	var sb strings.Builder
 	sb.WriteString("*")
-	sb.WriteString(strconv.Itoa(len(selected)))
+	sb.WriteString(strconv.Itoa(len(items)))
 	sb.WriteString("\r\n")
 
-	for _, e := range selected {
+	for _, e := range items {
 		sb.WriteString("$")
 		sb.WriteString(strconv.Itoa(len(e)))
 		sb.WriteString("\r\n")
