@@ -88,11 +88,17 @@ var arity = map[string][2]int{
 	"HSET":    {3, 9223372036854775807},
 	"HGET":    {2, 2},
 	"HGETALL": {1, 1},
+	"MULTI":   {0, 0},
+	"EXEC":    {0, 0},
+	"DISCARD": {0, 0},
 }
 
 var store = map[string]*StoreValue{}
 
 var clockOffsetMs int64 = 0
+
+var queue *list.List = list.New()
+var isTransaction bool = false
 
 func nowMs() int64 {
 	return time.Now().UnixNano()/int64(time.Millisecond) + clockOffsetMs
@@ -112,8 +118,31 @@ func main() {
 			continue
 		}
 
-		response := handleCommand(args)
-		fmt.Print(response)
+		if strings.EqualFold(args[0], "exec") {
+			if !isTransaction {
+				fmt.Print(encodeError("EXEC without MULTI"))
+				continue
+			}
+			fmt.Print(exec())
+		} else if strings.EqualFold(args[0], "discard") {
+			fmt.Print(discard())
+		} else {
+			if isTransaction {
+				if strings.EqualFold(args[0], "multi") {
+					queue.Init()
+					isTransaction = false
+					fmt.Print(encodeError("MULTI calls can not be nested"))
+					continue
+				}
+
+				queue.PushBack(args)
+				fmt.Print(encodeSimpleString("QUEUED"))
+				continue
+			}
+
+			response := handleCommand(args)
+			fmt.Print(response)
+		}
 	}
 }
 
@@ -258,6 +287,8 @@ func handleCommand(args []string) string {
 		return hget(args[1], args[2])
 	case "HGETALL":
 		return hgetall(args[1])
+	case "MULTI":
+		return multi()
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -600,6 +631,46 @@ func hgetall(key string) string {
 		items = append(items, f, *v)
 	}
 	return encodeArray(items)
+}
+
+func multi() string {
+	isTransaction = true
+	return encodeSimpleString("OK")
+}
+
+func exec() string {
+	defer func() {
+		isTransaction = false
+		queue.Init()
+	}()
+
+	results := []string{}
+
+	for e := queue.Front(); e != nil; e = e.Next() {
+		response := handleCommand(e.Value.([]string))
+		results = append(results, response)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("*")
+	sb.WriteString(strconv.Itoa(queue.Len()))
+	sb.WriteString("\r\n")
+
+	for e := queue.Front(); e != nil; e = e.Next() {
+		args, ok := e.Value.([]string)
+		if !ok {
+			continue
+		}
+		sb.WriteString(handleCommand(args))
+	}
+
+	return sb.String()
+}
+
+func discard() string {
+	queue.Init()
+	isTransaction = false
+	return encodeSimpleString("OK")
 }
 
 // --- RESP encoders ---
