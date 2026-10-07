@@ -64,33 +64,36 @@ func newStoreValueWithMap(maps map[string]*string) *StoreValue {
 }
 
 var arity = map[string][2]int{
-	"PING":    {0, 1},
-	"ECHO":    {1, 1},
-	"SET":     {2, 5},
-	"GET":     {1, 1},
-	"DBSIZE":  {0, 0},
-	"INCR":    {1, 1},
-	"DECR":    {1, 1},
-	"INCRBY":  {2, 2},
-	"DECRBY":  {2, 2},
-	"EXPIRE":  {2, 2},
-	"TTL":     {1, 1},
-	"PTTL":    {1, 1},
-	"PERSIST": {1, 1},
-	"WAIT":    {1, 1},
-	"EXISTS":  {1, 1},
-	"LPUSH":   {2, 9223372036854775807},
-	"RPUSH":   {2, 9223372036854775807},
-	"LRANGE":  {3, 3},
-	"LPOP":    {1, 1},
-	"RPOP":    {1, 1},
-	"LLEN":    {1, 1},
-	"HSET":    {3, 9223372036854775807},
-	"HGET":    {2, 2},
-	"HGETALL": {1, 1},
-	"MULTI":   {0, 0},
-	"EXEC":    {0, 0},
-	"DISCARD": {0, 0},
+	"PING":        {0, 1},
+	"ECHO":        {1, 1},
+	"SET":         {2, 5},
+	"GET":         {1, 1},
+	"DBSIZE":      {0, 0},
+	"INCR":        {1, 1},
+	"DECR":        {1, 1},
+	"INCRBY":      {2, 2},
+	"DECRBY":      {2, 2},
+	"EXPIRE":      {2, 2},
+	"TTL":         {1, 1},
+	"PTTL":        {1, 1},
+	"PERSIST":     {1, 1},
+	"WAIT":        {1, 1},
+	"EXISTS":      {1, 1},
+	"LPUSH":       {2, 9223372036854775807},
+	"RPUSH":       {2, 9223372036854775807},
+	"LRANGE":      {3, 3},
+	"LPOP":        {1, 1},
+	"RPOP":        {1, 1},
+	"LLEN":        {1, 1},
+	"HSET":        {3, 9223372036854775807},
+	"HGET":        {2, 2},
+	"HGETALL":     {1, 1},
+	"MULTI":       {0, 0},
+	"EXEC":        {0, 0},
+	"DISCARD":     {0, 0},
+	"SUBSCRIBE":   {1, 9223372036854775807},
+	"PUBLISH":     {2, 2},
+	"UNSUBSCRIBE": {0, 9223372036854775807},
 }
 
 var store = map[string]*StoreValue{}
@@ -98,6 +101,8 @@ var store = map[string]*StoreValue{}
 var clockOffsetMs int64 = 0
 
 var queue *list.List = list.New()
+var channels []string = []string{}
+
 var isTransaction bool = false
 
 func nowMs() int64 {
@@ -289,6 +294,15 @@ func handleCommand(args []string) string {
 		return hgetall(args[1])
 	case "MULTI":
 		return multi()
+	case "SUBSCRIBE":
+		return subscribe(args[1:])
+	case "PUBLISH":
+		return publish(args[1], args[2])
+	case "UNSUBSCRIBE":
+		if len(args) == 1 {
+			return unsubscribeAll()
+		}
+		return unsubscribe(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -671,6 +685,50 @@ func discard() string {
 	queue.Init()
 	isTransaction = false
 	return encodeSimpleString("OK")
+}
+
+func subscribe(newChannels []string) string {
+	var sb strings.Builder
+	for _, e := range newChannels {
+		channels = append(channels, e)
+		sb.WriteString(encodeSimpleString("subscribe " + e + " " + strconv.Itoa(len(channels))))
+	}
+	return sb.String()
+}
+
+func publish(channel string, message string) string {
+	var sb strings.Builder
+	for _, e := range channels {
+		if channel == e {
+			sb.WriteString(encodeSimpleString("message " + channel + " " + message))
+			sb.WriteString(encodeNumber(1))
+			return sb.String()
+		}
+	}
+	return encodeNumber(0)
+}
+
+func unsubscribe(channel string) string {
+	for i, e := range channels {
+		if channel == e {
+			channels[i] = channels[len(channels)-1]
+			channels = channels[:len(channels)-1]
+			return encodeSimpleString("unsubscribe " + channel + " " + strconv.Itoa(len(channels)))
+		}
+	}
+	return encodeNumber(0)
+}
+
+func unsubscribeAll() string {
+	var sb strings.Builder
+	remaining := len(channels)
+
+	for _, ch := range channels {
+		remaining--
+		sb.WriteString(encodeSimpleString("unsubscribe " + ch + " " + strconv.Itoa(remaining)))
+	}
+	channels = []string{}
+	return sb.String()
 }
 
 // --- RESP encoders ---
