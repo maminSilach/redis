@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -94,6 +95,8 @@ var arity = map[string][2]int{
 	"SUBSCRIBE":   {1, 9223372036854775807},
 	"PUBLISH":     {2, 2},
 	"UNSUBSCRIBE": {0, 9223372036854775807},
+	"SAVE":        {0, 0},
+	"RESTORE":     {1, 1},
 }
 
 var store = map[string]*StoreValue{}
@@ -102,6 +105,7 @@ var clockOffsetMs int64 = 0
 
 var queue *list.List = list.New()
 var channels []string = []string{}
+var dump []string = []string{}
 
 var isTransaction bool = false
 
@@ -303,6 +307,10 @@ func handleCommand(args []string) string {
 			return unsubscribeAll()
 		}
 		return unsubscribe(args[1])
+	case "SAVE":
+		return save()
+	case "RESTORE":
+		return restore(args[1])
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -729,6 +737,72 @@ func unsubscribeAll() string {
 	}
 	channels = []string{}
 	return sb.String()
+}
+
+func save() string {
+	dump = []string{}
+
+	keys := make([]string, 0, len(store))
+	for k := range store {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	for _, key := range keys {
+		storeValue := store[key]
+
+		switch {
+		case storeValue.list != nil:
+			var parts []string
+			for e := storeValue.list.Front(); e != nil; e = e.Next() {
+				parts = append(parts, e.Value.(string))
+			}
+			stringDump := "KEY list " + key + " " + strings.Join(parts, ",")
+			dump = append(dump, stringDump)
+
+		default:
+			stringDump := "KEY string " + key + " " + storeValue.value
+			dump = append(dump, stringDump)
+		}
+	}
+
+	var sb strings.Builder
+	for _, line := range dump {
+		sb.WriteString(line)
+		sb.WriteString("\r\n")
+	}
+	sb.WriteString(encodeSimpleString("OK"))
+	return sb.String()
+}
+
+func restore(command string) string {
+	parts := strings.SplitN(command, " ", 4)
+	if len(parts) < 4 || parts[0] != "KEY" {
+		return encodeError("invalid dump format")
+	}
+
+	typ := parts[1]
+	key := parts[2]
+	value := parts[3]
+
+	switch typ {
+	case "string":
+		store[key] = newStoreValue(value)
+
+	case "list":
+		l := list.New()
+		if value != "" {
+			for _, e := range strings.Split(value, ",") {
+				l.PushBack(e)
+			}
+		}
+		store[key] = newStoreValueWithList(l)
+
+	default:
+		return encodeError("unknown type in dump")
+	}
+
+	return encodeSimpleString("OK")
 }
 
 // --- RESP encoders ---
