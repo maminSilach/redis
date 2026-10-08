@@ -97,6 +97,8 @@ var arity = map[string][2]int{
 	"UNSUBSCRIBE": {0, 9223372036854775807},
 	"SAVE":        {0, 0},
 	"RESTORE":     {1, 1},
+	"MAXKEYS":     {1, 1},
+	"INFO":        {1, 1},
 }
 
 var store = map[string]*StoreValue{}
@@ -106,6 +108,8 @@ var clockOffsetMs int64 = 0
 var queue *list.List = list.New()
 var channels []string = []string{}
 var dump []string = []string{}
+var max int = 0
+var lru map[string]int64 = map[string]int64{}
 
 var isTransaction bool = false
 
@@ -195,6 +199,13 @@ func handleCommand(args []string) string {
 		return message
 	}
 
+	if len(args) > 1 {
+		_, ok := store[args[1]]
+		if max != 0 && max < len(store)+1 && !ok && cmd == "SET" {
+			eviction()
+		}
+	}
+
 	switch cmd {
 	case "PING":
 		if len(args) > 1 {
@@ -206,6 +217,8 @@ func handleCommand(args []string) string {
 		return encodeBulkString(args[1])
 
 	case "SET":
+		clockOffsetMs++
+		lru[args[1]] = clockOffsetMs
 		return set(args)
 
 	case "GET":
@@ -213,6 +226,8 @@ func handleCommand(args []string) string {
 		if !ok {
 			return encodeNullBulkString()
 		}
+		clockOffsetMs++
+		lru[args[1]] = clockOffsetMs
 		return encodeBulkString(res.value)
 
 	case "DBSIZE":
@@ -311,6 +326,17 @@ func handleCommand(args []string) string {
 		return save()
 	case "RESTORE":
 		return restore(args[1])
+	case "MAXKEYS":
+		maxInt, err := strconv.Atoi(args[1])
+		if err != nil {
+			return encodeError("value is not an integer or out of range")
+		}
+
+		max = maxInt
+		return encodeSimpleString("OK")
+
+	case "INFO":
+		return encodeBulkString("keys:" + strconv.Itoa(len(store)) + ",maxkeys:" + strconv.Itoa(max))
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
@@ -803,6 +829,21 @@ func restore(command string) string {
 	}
 
 	return encodeSimpleString("OK")
+}
+
+func eviction() {
+	var min int64 = 9223372036854775807
+	var key string = ""
+	for k, e := range lru {
+		if e < min {
+			min = e
+			key = k
+		}
+	}
+
+	if key != "" {
+		delete(store, key)
+	}
 }
 
 // --- RESP encoders ---
