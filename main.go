@@ -99,6 +99,8 @@ var arity = map[string][2]int{
 	"RESTORE":     {1, 1},
 	"MAXKEYS":     {1, 1},
 	"INFO":        {1, 1},
+	"WATCH":       {1, 9223372036854775807},
+	"UNWATCH":     {0, 0},
 }
 
 var store = map[string]*StoreValue{}
@@ -110,6 +112,7 @@ var channels []string = []string{}
 var dump []string = []string{}
 var max int = 0
 var lru map[string]int64 = map[string]int64{}
+var watching map[string]bool = map[string]bool{}
 
 var isTransaction bool = false
 
@@ -153,7 +156,7 @@ func main() {
 				continue
 			}
 
-			response := handleCommand(args)
+			response, _ := handleCommand(args)
 			fmt.Print(response)
 		}
 	}
@@ -187,16 +190,16 @@ func parseArgs(line string) []string {
 	return args
 }
 
-func handleCommand(args []string) string {
+func handleCommand(args []string) (string, error) {
 	if len(args) == 0 {
-		return encodeError("empty command")
+		return encodeError("empty command"), nil
 	}
 
 	cmd := strings.ToUpper(args[0])
 	argCount := len(args) - 1
 
 	if message, err := checkArity(cmd, argCount); err != nil {
-		return message
+		return message, nil
 	}
 
 	if len(args) > 1 {
@@ -209,12 +212,12 @@ func handleCommand(args []string) string {
 	switch cmd {
 	case "PING":
 		if len(args) > 1 {
-			return encodeBulkString(args[1])
+			return encodeBulkString(args[1]), nil
 		}
-		return encodeSimpleString("PONG")
+		return encodeSimpleString("PONG"), nil
 
 	case "ECHO":
-		return encodeBulkString(args[1])
+		return encodeBulkString(args[1]), nil
 
 	case "SET":
 		clockOffsetMs++
@@ -224,11 +227,11 @@ func handleCommand(args []string) string {
 	case "GET":
 		res, ok := get(args[1])
 		if !ok {
-			return encodeNullBulkString()
+			return encodeNullBulkString(), nil
 		}
 		clockOffsetMs++
 		lru[args[1]] = clockOffsetMs
-		return encodeBulkString(res.value)
+		return encodeBulkString(res.value), nil
 
 	case "DBSIZE":
 		size := 0
@@ -239,107 +242,112 @@ func handleCommand(args []string) string {
 			}
 			size++
 		}
-		return encodeNumber(size)
+		return encodeNumber(size), nil
 
 	case "INCR":
 		return increment(args[1], "1")
 
 	case "DECR":
-		return decrement(args[1], "1")
+		return decrement(args[1], "1"), nil
 
 	case "INCRBY":
 		return increment(args[1], args[2])
 
 	case "DECRBY":
-		return decrement(args[1], args[2])
+		return decrement(args[1], args[2]), nil
 
 	case "EXPIRE":
-		return expire(args[1], args[2])
+		return expire(args[1], args[2]), nil
 
 	case "TTL":
-		return ttl(args[1], time.Second)
+		return ttl(args[1], time.Second), nil
 
 	case "PTTL":
-		return ttl(args[1], time.Millisecond)
+		return ttl(args[1], time.Millisecond), nil
 
 	case "PERSIST":
-		return persist(args[1])
+		return persist(args[1]), nil
 
 	case "WAIT":
 		ms, err := strconv.Atoi(args[1])
 		if err != nil {
-			return encodeError("value is not an integer or out of range")
+			return encodeError("value is not an integer or out of range"), nil
 		}
 		clockOffsetMs += int64(ms)
-		return encodeSimpleString("OK")
+		return encodeSimpleString("OK"), nil
 
 	case "EXISTS":
 		key := args[1]
 		storeValue, ok := store[key]
 		if !ok {
-			return encodeNumber(0)
+			return encodeNumber(0), nil
 		}
 		if expireTTL(storeValue) {
 			delete(store, key)
-			return encodeNumber(0)
+			return encodeNumber(0), nil
 		}
-		return encodeNumber(1)
+		return encodeNumber(1), nil
 
 	case "RPUSH":
-		return push(args, true)
+		return push(args, true), nil
 	case "LPUSH":
-		return push(args, false)
+		return push(args, false), nil
 	case "LRANGE":
 		start, err := strconv.Atoi(args[2])
 		if err != nil {
-			return encodeError("value is not an integer or out of range")
+			return encodeError("value is not an integer or out of range"), nil
 		}
 		end, err := strconv.Atoi(args[3])
 		if err != nil {
-			return encodeError("value is not an integer or out of range")
+			return encodeError("value is not an integer or out of range"), nil
 		}
-		return lrange(args[1], start, end)
+		return lrange(args[1], start, end), nil
 	case "LPOP":
-		return pop(args[1], false)
+		return pop(args[1], false), nil
 	case "RPOP":
-		return pop(args[1], true)
+		return pop(args[1], true), nil
 	case "LLEN":
-		return llen(args[1])
+		return llen(args[1]), nil
 	case "HSET":
-		return hset(args)
+		return hset(args), nil
 	case "HGET":
-		return hget(args[1], args[2])
+		return hget(args[1], args[2]), nil
 	case "HGETALL":
-		return hgetall(args[1])
+		return hgetall(args[1]), nil
 	case "MULTI":
-		return multi()
+		return multi(), nil
 	case "SUBSCRIBE":
-		return subscribe(args[1:])
+		return subscribe(args[1:]), nil
 	case "PUBLISH":
-		return publish(args[1], args[2])
+		return publish(args[1], args[2]), nil
 	case "UNSUBSCRIBE":
 		if len(args) == 1 {
-			return unsubscribeAll()
+			return unsubscribeAll(), nil
 		}
-		return unsubscribe(args[1])
+		return unsubscribe(args[1]), nil
 	case "SAVE":
-		return save()
+		return save(), nil
 	case "RESTORE":
-		return restore(args[1])
+		return restore(args[1]), nil
 	case "MAXKEYS":
 		maxInt, err := strconv.Atoi(args[1])
 		if err != nil {
-			return encodeError("value is not an integer or out of range")
+			return encodeError("value is not an integer or out of range"), nil
 		}
 
 		max = maxInt
-		return encodeSimpleString("OK")
+		return encodeSimpleString("OK"), nil
 
 	case "INFO":
-		return encodeBulkString("keys:" + strconv.Itoa(len(store)) + ",maxkeys:" + strconv.Itoa(max))
+		return encodeBulkString("keys:" + strconv.Itoa(len(store)) + ",maxkeys:" + strconv.Itoa(max)), nil
+	case "WATCH":
+		return watch(args[1:]), nil
+	case "UNWATCH":
+		watching = map[string]bool{}
+		return encodeSimpleString("OK"), nil
 	}
 
-	return encodeError(fmt.Sprintf("unknown command '%s'", cmd))
+	return encodeError(fmt.Sprintf("unknown command '%s'", cmd)), nil
 }
 
 func checkArity(cmd string, argCount int) (string, error) {
@@ -351,7 +359,7 @@ func checkArity(cmd string, argCount int) (string, error) {
 	return "", nil
 }
 
-func set(args []string) string {
+func set(args []string) (string, error) {
 	var nx, xx bool
 	var ttl *int64 = nil
 
@@ -364,21 +372,21 @@ func set(args []string) string {
 			xx = true
 		case "EX":
 			if idx+1 >= len(args) {
-				return encodeError("syntax error")
+				return encodeError("syntax error"), nil
 			}
 			n, err := strconv.Atoi(args[idx+1])
 			if err != nil {
-				return encodeError("value is not an integer or out of range")
+				return encodeError("value is not an integer or out of range"), nil
 			}
 			exp := nowMs() + int64(n)*1000
 			ttl = &exp
 		case "PX":
 			if idx+1 >= len(args) {
-				return encodeError("syntax error")
+				return encodeError("syntax error"), nil
 			}
 			n, err := strconv.Atoi(args[idx+1])
 			if err != nil {
-				return encodeError("value is not an integer or out of range")
+				return encodeError("value is not an integer or out of range"), nil
 			}
 			exp := nowMs() + int64(n)
 			ttl = &exp
@@ -390,17 +398,30 @@ func set(args []string) string {
 
 	if nx {
 		if _, ok := store[key]; ok {
-			return encodeNullBulkString()
+			return encodeNullBulkString(), nil
 		}
 	}
 	if xx {
 		if _, ok := store[key]; !ok {
-			return encodeNullBulkString()
+			return encodeNullBulkString(), nil
+		}
+	}
+
+	_, isWatching := watching[key]
+	if !isTransaction && isWatching {
+		watching[key] = true
+	}
+
+	if isTransaction && len(watching) > 0 {
+		for _, isTouch := range watching {
+			if isTouch {
+				return encodeNullBulkString(), errors.New(encodeNullBulkString())
+			}
 		}
 	}
 
 	store[key] = newStoreValueWithTTL(value, ttl)
-	return encodeSimpleString("OK")
+	return encodeSimpleString("OK"), nil
 }
 
 func get(key string) (*StoreValue, bool) {
@@ -416,10 +437,10 @@ func get(key string) (*StoreValue, bool) {
 	return storeValue, true
 }
 
-func increment(key string, amount string) string {
+func increment(key string, amount string) (string, error) {
 	val, err := strconv.Atoi(amount)
 	if err != nil {
-		return encodeError("value is not an integer or out of range")
+		return encodeError("value is not an integer or out of range"), nil
 	}
 
 	prev, ok := store[key]
@@ -430,17 +451,30 @@ func increment(key string, amount string) string {
 
 	if !ok {
 		store[key] = newStoreValue(strconv.Itoa(val))
-		return encodeNumber(val)
+		return encodeNumber(val), nil
 	}
 
 	prevAsInt, err := strconv.Atoi(prev.value)
 	if err != nil {
-		return encodeError("value is not an integer or out of range")
+		return encodeError("value is not an integer or out of range"), nil
+	}
+
+	_, isWatching := watching[key]
+	if !isTransaction && isWatching {
+		watching[key] = true
+	}
+
+	if isTransaction && len(watching) > 0 {
+		for _, isTouch := range watching {
+			if isTouch {
+				return encodeNullBulkString(), errors.New(encodeNullBulkString())
+			}
+		}
 	}
 
 	resultValue := prevAsInt + val
 	store[key] = newStoreValue(strconv.Itoa(resultValue))
-	return encodeNumber(resultValue)
+	return encodeNumber(resultValue), nil
 }
 
 func decrement(key string, amount string) string {
@@ -692,13 +726,6 @@ func exec() string {
 		queue.Init()
 	}()
 
-	results := []string{}
-
-	for e := queue.Front(); e != nil; e = e.Next() {
-		response := handleCommand(e.Value.([]string))
-		results = append(results, response)
-	}
-
 	var sb strings.Builder
 	sb.WriteString("*")
 	sb.WriteString(strconv.Itoa(queue.Len()))
@@ -709,7 +736,11 @@ func exec() string {
 		if !ok {
 			continue
 		}
-		sb.WriteString(handleCommand(args))
+		response, err := handleCommand(args)
+		if err != nil {
+			return encodeNullBulkString()
+		}
+		sb.WriteString(response)
 	}
 
 	return sb.String()
@@ -844,6 +875,14 @@ func eviction() {
 	if key != "" {
 		delete(store, key)
 	}
+}
+
+func watch(keys []string) string {
+	for _, e := range keys {
+		watching[e] = false
+	}
+
+	return encodeSimpleString("OK")
 }
 
 // --- RESP encoders ---
