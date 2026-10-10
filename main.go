@@ -904,21 +904,43 @@ func watch(keys []string) string {
 
 func xadd(args []string) string {
 	streamId := args[0]
-	var stream, ok = streams[streamId]
-	if !ok {
-		maps := map[string]*StreamValue{}
-		streams[streamId] = maps
-		stream = maps
-	}
-
-	clockOffsetMs++
-	operationKey := strconv.Itoa(int(clockOffsetMs)) + "-" + strconv.Itoa(nextId)
-	valueKey := args[2]
+	rawID := args[1]
+	field := args[2]
 	value := args[3]
 
-	stream[operationKey] = &StreamValue{key: valueKey, value: value}
+	stream, ok := streams[streamId]
+	if !ok {
+		stream = map[string]*StreamValue{}
+		streams[streamId] = stream
+	}
 
-	return encodeBulkString(operationKey)
+	var lastID string
+	for id := range stream {
+		if lastID == "" || compareStreamIDs(id, lastID) > 0 {
+			lastID = id
+		}
+	}
+
+	var entryID string
+	if rawID == "*" {
+		clockOffsetMs++
+		ms := clockOffsetMs
+		if lastID != "" {
+			lastMs, _ := parseStreamID(lastID)
+			if ms <= lastMs {
+				ms = lastMs + 1
+			}
+		}
+		entryID = strconv.FormatInt(ms, 10) + "-0"
+	} else {
+		if lastID != "" && compareStreamIDs(rawID, lastID) <= 0 {
+			return encodeError("The ID specified in XADD is equal or smaller than the target stream top item")
+		}
+		entryID = rawID
+	}
+
+	stream[entryID] = &StreamValue{key: field, value: value}
+	return encodeBulkString(entryID)
 }
 
 func xlen(streamId string) string {
