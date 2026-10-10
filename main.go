@@ -27,6 +27,11 @@ type StoreValue struct {
 	maps  map[string]*string
 }
 
+type StreamValue struct {
+	key   string
+	value string
+}
+
 func mustAtoi(s string) int {
 	n, err := strconv.Atoi(s)
 	if err != nil {
@@ -101,9 +106,15 @@ var arity = map[string][2]int{
 	"INFO":        {1, 1},
 	"WATCH":       {1, 9223372036854775807},
 	"UNWATCH":     {0, 0},
+	"XADD":        {4, 9223372036854775807},
+	"XLEN":        {1, 1},
+	"XRANGE":      {3, 3},
+	"XREAD":       {5, 5},
 }
 
 var store = map[string]*StoreValue{}
+var streams = map[string]map[string]*StreamValue{}
+var nextId = 0
 
 var clockOffsetMs int64 = 0
 
@@ -345,6 +356,12 @@ func handleCommand(args []string) (string, error) {
 	case "UNWATCH":
 		watching = map[string]bool{}
 		return encodeSimpleString("OK"), nil
+	case "XADD":
+		return xadd(args[1:]), nil
+	case "XLEN":
+		return xlen(args[1]), nil
+	case "XRANGE":
+		return xrange(args[1:]), nil
 	}
 
 	return encodeError(fmt.Sprintf("unknown command '%s'", cmd)), nil
@@ -883,6 +900,98 @@ func watch(keys []string) string {
 	}
 
 	return encodeSimpleString("OK")
+}
+
+func xadd(args []string) string {
+	streamId := args[0]
+	var stream, ok = streams[streamId]
+	if !ok {
+		maps := map[string]*StreamValue{}
+		streams[streamId] = maps
+		stream = maps
+	}
+
+	clockOffsetMs++
+	operationKey := strconv.Itoa(int(clockOffsetMs)) + "-" + strconv.Itoa(nextId)
+	valueKey := args[2]
+	value := args[3]
+
+	stream[operationKey] = &StreamValue{key: valueKey, value: value}
+
+	return encodeBulkString(operationKey)
+}
+
+func xlen(streamId string) string {
+	return encodeNumber(len(streams[streamId]))
+}
+
+func xrange(args []string) string {
+	streamId := args[0]
+	stream, ok := streams[streamId]
+	if !ok || len(stream) == 0 {
+		return encodeEmpty()
+	}
+
+	startID := args[1]
+	endID := args[2]
+
+	if startID != "-" || endID != "+" {
+		return encodeError("syntax error")
+	}
+
+	ids := make([]string, 0, len(stream))
+	for id := range stream {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return compareStreamIDs(ids[i], ids[j]) < 0
+	})
+
+	var sb strings.Builder
+	sb.WriteString("*")
+	sb.WriteString(strconv.Itoa(len(ids)))
+	sb.WriteString("\r\n")
+
+	for _, id := range ids {
+		sv := stream[id]
+
+		sb.WriteString("*2\r\n")
+		sb.WriteString(encodeBulkString(id))
+		sb.WriteString("*2\r\n")
+		sb.WriteString(encodeBulkString(sv.key))
+		sb.WriteString(encodeBulkString(sv.value))
+	}
+
+	return sb.String()
+}
+
+func compareStreamIDs(a, b string) int {
+	aMs, aSeq := parseStreamID(a)
+	bMs, bSeq := parseStreamID(b)
+
+	if aMs != bMs {
+		if aMs < bMs {
+			return -1
+		}
+		return 1
+	}
+	if aSeq < bSeq {
+		return -1
+	}
+	if aSeq > bSeq {
+		return 1
+	}
+	return 0
+}
+
+func parseStreamID(id string) (int64, int64) {
+	parts := strings.SplitN(id, "-", 2)
+	ms, _ := strconv.ParseInt(parts[0], 10, 64)
+	var seq int64
+	if len(parts) == 2 {
+		seq, _ = strconv.ParseInt(parts[1], 10, 64)
+	}
+	return ms, seq
 }
 
 // --- RESP encoders ---
